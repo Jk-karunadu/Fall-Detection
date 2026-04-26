@@ -1,0 +1,262 @@
+# Fall Detection System — Complete Project Walkthrough
+
+A real-time fall detection system that uses **YOLOv8 object detection** to identify people in video frames and determine if they have fallen based on bounding-box geometry.
+
+```mermaid
+flowchart LR
+    A["📹 fall.mp4"] --> B["📦 OpenCV\nRead & Resize"]
+    B --> C["🧠 YOLOv8s\nObject Detection"]
+    C --> D{"Person?\nconf > 80%?"}
+    D -- Yes --> E{"height < width?"}
+    E -- Yes --> F["🚨 Fall Detected"]
+    E -- No --> G["✅ Standing"]
+    D -- No --> H["⏭️ Skip"]
+    F --> I["🖥️ Display Frame"]
+    G --> I
+```
+
+---
+
+## File-by-File Breakdown
+
+---
+
+### 1. [main.py](file:///e:/projects/Fall-Detection/main.py) — The Core Application
+
+This is the **only code file** in the project. It runs the entire detection pipeline in ~55 lines.
+
+#### Imports (Lines 1–4)
+
+```python
+import cv2          # OpenCV — video capture, frame manipulation, display
+import cvzone       # OpenCV helper — pretty bounding boxes & text overlays
+import math         # math.ceil() to round confidence percentages
+from ultralytics import YOLO  # YOLOv8 model loader and inference engine
+```
+
+| Library | Why it's used |
+|---|---|
+| **cv2 (OpenCV)** | Industry-standard computer vision library. Handles reading video frames, resizing, drawing, and displaying the output window. |
+| **cvzone** | A lightweight wrapper around OpenCV that provides `cornerRect()` for styled bounding boxes and `putTextRect()` for text with background — saves boilerplate code. |
+| **math** | Only used for `math.ceil()` to convert float confidence (e.g. `0.873`) into a clean integer percentage (`87`). |
+| **ultralytics (YOLO)** | The official YOLOv8 library by Ultralytics. Loads the pre-trained model, runs inference on each frame, and returns structured detection results. |
+
+#### Video & Model Setup (Lines 6–12)
+
+```python
+cap = cv2.VideoCapture('fall.mp4')       # Open the test video
+model = YOLO('yolov8s.pt')               # Load YOLOv8-small model
+
+classnames = []
+with open('classes.txt', 'r') as f:
+    classnames = f.read().splitlines()   # Load 80 COCO class names into a list
+```
+
+| Variable | What it does |
+|---|---|
+| `cap` | An OpenCV `VideoCapture` object that reads [fall.mp4](file:///e:/projects/Fall-Detection/fall.mp4) frame-by-frame. Could also be replaced with `0` for a live webcam feed. |
+| `model` | The loaded YOLOv8s neural network. The `'s'` stands for "small" — a balance between speed and accuracy. |
+| `classnames` | A Python list of 80 object names (index 0 = `"person"`, index 1 = `"bicycle"`, etc.) used to convert numeric class IDs into human-readable labels. |
+
+#### Main Detection Loop (Lines 15–50)
+
+```python
+while True:
+    ret, frame = cap.read()                      # Step 1: Read next frame
+    frame = cv2.resize(frame, (980, 740))         # Step 2: Resize to fixed dimensions
+    results = model(frame)                        # Step 3: Run YOLOv8 inference
+```
+
+**Step-by-step for each frame:**
+
+| Step | Code | What happens |
+|---|---|---|
+| **Read** | `cap.read()` | Grabs the next video frame. `ret` is `True` if successful, `False` at end of video. |
+| **Resize** | `cv2.resize(frame, (980, 740))` | Standardizes frame size to 980×740 pixels regardless of source resolution. |
+| **Detect** | `model(frame)` | Feeds the frame through the YOLOv8 neural network. Returns a list of detection results. |
+
+#### Processing Each Detection (Lines 21–45)
+
+```python
+for info in results:                              # Loop over result batches
+    parameters = info.boxes                       # Get all bounding boxes
+    for box in parameters:                        # Loop over each detection
+        x1, y1, x2, y2 = box.xyxy[0]             # Top-left & bottom-right corners
+        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+        confidence = box.conf[0]                  # Detection confidence (0.0–1.0)
+        class_detect = box.cls[0]                 # Class ID (integer)
+        class_detect = int(class_detect)
+        class_detect = classnames[class_detect]   # Convert ID → name ("person")
+        conf = math.ceil(confidence * 100)        # Convert to percentage
+```
+
+**Key variables explained:**
+
+| Variable | Example Value | Meaning |
+|---|---|---|
+| `x1, y1` | `120, 50` | Top-left corner of the bounding box (pixels) |
+| `x2, y2` | `280, 400` | Bottom-right corner of the bounding box (pixels) |
+| `confidence` | `0.92` | How sure the model is that this object exists (0–1) |
+| `class_detect` | `"person"` | The name of the detected object class |
+| `conf` | `92` | Confidence as a clean percentage |
+
+#### The Fall Detection Logic (Lines 33–45)
+
+```python
+height = y2 - y1          # Bounding box height
+width  = x2 - x1          # Bounding box width
+threshold = height - width # The key heuristic
+
+if conf > 80 and class_detect == 'person':
+    # Draw bounding box + label for high-confidence person detections
+    cvzone.cornerRect(frame, [x1, y1, width, height], l=30, rt=6)
+    cvzone.putTextRect(frame, f'{class_detect}', [x1 + 8, y1 - 12], thickness=2, scale=2)
+
+if threshold < 0:
+    # If the person is wider than tall → Fall Detected
+    cvzone.putTextRect(frame, 'Fall Detected', [height, width], thickness=2, scale=2)
+```
+
+**The core idea visualized:**
+
+```
+  Standing Person          Fallen Person
+  ┌──────┐  height > width  ┌──────────────┐  width > height
+  │      │                  │              │
+  │      │                  └──────────────┘
+  │      │
+  │      │
+  └──────┘
+  threshold > 0  ✅          threshold < 0  🚨
+```
+
+- **Standing:** Bounding box is taller than wide → `height - width > 0` → Normal
+- **Fallen:** Bounding box is wider than tall → `height - width < 0` → **FALL DETECTED**
+
+#### Display & Exit (Lines 48–54)
+
+```python
+cv2.imshow('frame', frame)              # Show the annotated frame in a window
+if cv2.waitKey(1) & 0xFF == ord('t'):   # Wait 1ms; if 't' is pressed, exit
+    break
+
+cap.release()                           # Release the video file handle
+cv2.destroyAllWindows()                 # Close the display window
+```
+
+| Function | Purpose |
+|---|---|
+| `cv2.imshow()` | Renders the annotated frame in a GUI window titled "frame" |
+| `cv2.waitKey(1)` | Pauses 1ms between frames (controls playback speed) and listens for keypresses |
+| `ord('t')` | The ASCII code for `t` — pressing `t` exits the loop |
+| `cap.release()` | Frees the video file so the OS can close it |
+| `cv2.destroyAllWindows()` | Cleans up all OpenCV GUI windows |
+
+---
+
+### 2. [yolov8s.pt](file:///e:/projects/Fall-Detection/yolov8s.pt) — Pre-trained Model Weights (~22.5 MB)
+
+This is a **binary file** containing the trained neural network parameters for **YOLOv8-small**.
+
+| Property | Detail |
+|---|---|
+| **Architecture** | YOLOv8s (small variant) |
+| **Training data** | COCO dataset (330K images, 80 object classes) |
+| **What it detects** | People, cars, animals, furniture, electronics — all 80 COCO classes |
+| **Why "small"** | The YOLOv8 family has 5 sizes: `n` (nano) → `s` (small) → `m` (medium) → `l` (large) → `x` (extra-large). The `s` variant balances speed and accuracy for real-time use. |
+| **How it's used** | Loaded by `YOLO('yolov8s.pt')` which reconstructs the neural network architecture and fills it with these trained weights. |
+
+> [!NOTE]
+> The model detects **all 80 classes** but the code only acts on `"person"` detections. The other 79 classes are effectively ignored.
+
+---
+
+### 3. [classes.txt](file:///e:/projects/Fall-Detection/classes.txt) — COCO Class Labels (80 lines)
+
+A plain text file with one class name per line, corresponding to the **COCO dataset's 80 object categories**.
+
+```
+Line 0:  person        ← This is the only class used for fall detection
+Line 1:  bicycle
+Line 2:  car
+...
+Line 79: toothbrush
+```
+
+| Purpose | Detail |
+|---|---|
+| **Why it exists** | YOLOv8 returns a numeric class ID (e.g., `0`). This file maps that ID to a readable name (e.g., `"person"`). |
+| **How it's used** | Loaded into `classnames` list → `classnames[0]` returns `"person"`. |
+| **Could it be removed?** | Technically yes — Ultralytics' YOLO model has a built-in `model.names` dictionary. But using an external file gives explicit control over label names. |
+
+---
+
+### 4. [fall.mp4](file:///e:/projects/Fall-Detection/fall.mp4) — Test Video (~1.4 MB)
+
+A short video clip showing a person falling, used as the input source for detection.
+
+| Property | Detail |
+|---|---|
+| **Purpose** | Demo/test input — provides frames for the detection pipeline |
+| **Replaceable?** | Yes — change `cv2.VideoCapture('fall.mp4')` to `cv2.VideoCapture(0)` for **live webcam** input, or point to any other video file. |
+
+---
+
+### 5. [requirements.txt](file:///e:/projects/Fall-Detection/requirements.txt) — Python Dependencies
+
+```
+ultralytics
+cvzone
+```
+
+| Package | Brings in | Version pinned? |
+|---|---|---|
+| `ultralytics` | YOLOv8, PyTorch, NumPy, Pillow, and many sub-dependencies | ❌ No |
+| `cvzone` | OpenCV drawing utilities | ❌ No |
+
+> [!TIP]
+> Install with: `pip install -r requirements.txt`
+> This will also pull in `opencv-python`, `torch`, `numpy`, etc. as transitive dependencies.
+
+---
+
+## Complete Execution Flow Summary
+
+```mermaid
+sequenceDiagram
+    participant V as fall.mp4
+    participant CV as OpenCV
+    participant Y as YOLOv8s Model
+    participant L as Fall Logic
+    participant D as Display Window
+
+    loop Every Frame
+        V->>CV: Read frame
+        CV->>CV: Resize to 980×740
+        CV->>Y: Send frame for inference
+        Y->>CV: Return bounding boxes + classes + confidence
+        loop Each Detection
+            CV->>L: Check if person & conf > 80%
+            L->>L: Compare height vs width
+            alt height < width
+                L->>D: Draw "Fall Detected" 🚨
+            else height ≥ width
+                L->>D: Draw bounding box ✅
+            end
+        end
+        CV->>D: Show annotated frame
+        D->>D: Wait for 't' keypress to exit
+    end
+```
+
+---
+
+## Technology Stack Summary
+
+| Layer | Technology | Role |
+|---|---|---|
+| **Deep Learning** | PyTorch + YOLOv8 | Object detection neural network |
+| **Computer Vision** | OpenCV | Video I/O, frame processing, display |
+| **Visualization** | cvzone | Pretty bounding boxes and text labels |
+| **Model** | YOLOv8s (COCO) | Pre-trained on 80 common object classes |
+| **Language** | Python | Scripting and orchestration |
